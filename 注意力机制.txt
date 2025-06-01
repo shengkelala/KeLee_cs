@@ -1,0 +1,171 @@
+（ps:想学习一下这个的契机是最近在看restorerID的代码，看到unet的编码器部分时发现他有一个多头注意力下先分qkv后分头执行注意力和传统先分头后在每个头上面执行注意力的东西，发现完全不懂这么做是为什么所以觉得对注意力这里了解的还是比较笼统了哈哈，虽然搜了一下发现网上讲的也很笼统就是了（苦笑））
+
+注意力机制：
+
+![img](https://pic4.zhimg.com/v2-0f40c220deea476da46f616a3154136d_1440w.jpg)
+
+具体操作如下：
+
+（1）**先根据 Query，Key计算两者的相关性**，然后再通过 softmax 函数得到 **注意力分数**，使用 softmax 函数是为了使得所有的注意力分数在 [0,1] 之间，并且和为1。这里的重点在于如何计算 Query，Key的相关性，这也是很多论文一个小的创新点所在。Query，Key的相关性公式一般表示如下：
+
+![image-20250228170157269](../AppData/Roaming/Typora/typora-user-images/image-20250228170157269.png)
+
+α(q,ki) 有很多变体，比如：**加性注意力**、**缩放点积注意力**等等。
+
+在**加性注意力**中，主要是将 Query，Key分别乘以对应的可训练矩阵，然后进行相加，具体如下：
+
+![image-20250228170227862](../AppData/Roaming/Typora/typora-user-images/image-20250228170227862.png)
+
+其中， ，Wq，Wk 分别是是 Query，Key对应的可训练矩阵， wvT 是 Value对应的可训练矩阵，是为了后面方便和 Value 进行相乘。
+
+在**缩放点积注意力**中，主要是直接将Query，Key进行相乘，具体如下：
+
+![image-20250228170251691](../AppData/Roaming/Typora/typora-user-images/image-20250228170251691.png)
+
+从公式可以看出，这就需要 Query，Key的长度是一样的，都为 d ；为什么要除以 d ？下面我会讲到。
+
+（2）**根据注意力分数进行加权求和，得到带注意力分数的 Value**，以方便进行下游任务。
+
+Output=score(Q,K)V
+
+在（1）中，我们得到了Query，Key的相关性，如果相关性越大，注意力分数就越高，反之越低；然后将注意力分数乘以对应的 Value，再进行加权求和；就比如："我"和"me"的相关性较大，注意力分数就会越高；这样可以让下游任务理解"我"和"me"是匹配程度高。
+
+多头自注意力机制：
+
+![img](https://pica.zhimg.com/v2-18638aafea77d3cf87973a59c08315b8_1440w.jpg)
+
+在维度上（一般是chanel)分出多个头，每个头对应一组查询，键和值
+
+通道注意力机制：
+
+![img](https://pic4.zhimg.com/v2-c07b0aa71407aaa140b6091ab44e7f03_1440w.jpg)
+
+上图是SENET的实现方法，采用每个通道上的全局池化和平均池化得到形状为b,c,1,1的张量，经过激活函数和全连接层最终得到每个通道的权重，和原始矩阵相乘得到输出
+
+不过也有将h和w展开成h*W个c维序列的方法
+
+空间注意力机制：
+
+个人认为是在整个图像的所有通道上的所有值上进行注意力，有的实现方法是对于每一个像素点位置，在其对应的通道上选择最大值或者取平均值得到2个h*W的矩阵，将这两个矩阵拼接通过Sigmoid函数来获得权重，如下图：
+
+![img](https://pica.zhimg.com/v2-a933c1673462dbb3a16ba0254c0b3c98_1440w.jpg)
+
+在restorerID中的注意力机制实现：
+
+vae中无注意力层，clip的text encoder是冻结的，接下来只有unet架构中
+
+unet的编码器中的Resnet_2模块后有自注意力模块，实现如下：
+
+这里的注意力机制是空间注意力
+
+```python
+if use_new_attention_order:
+```
+
+```python
+class QKVAttention(nn.Module):
+    """
+    A module which performs QKV attention and splits in a different order.
+    """
+
+    def __init__(self, n_heads):
+        super().__init__()
+        self.n_heads = n_heads
+        self.attention_op: Optional[Any] = None
+
+    def forward(self, qkv):
+        """
+        Apply QKV attention.
+        :param qkv: an [N x (3 * H * C) x T] tensor of Qs, Ks, and Vs.
+        :return: an [N x (H * C) x T] tensor after attention.
+        """
+        bs, width, length = qkv.shape
+        assert width % (3 * self.n_heads) == 0
+        ch = width // (3 * self.n_heads)
+        q, k, v = qkv.chunk(3, dim=1)
+        scale = 1 / math.sqrt(math.sqrt(ch))
+        if XFORMERS_IS_AVAILBLE:
+            q, k, v = map(
+                lambda t:t.permute(0,2,1)
+                .contiguous(),
+                (q, k, v),
+            )
+            # actually compute the attention, what we cannot get enough of
+            a = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None, op=self.attention_op)
+            a = (
+                a.permute(0,2,1)
+                .reshape(bs, -1, length)
+            )
+        else:
+            weight = th.einsum(
+                "bct,bcs->bts",
+                (q * scale).view(bs * self.n_heads, ch, length),
+                (k * scale).view(bs * self.n_heads, ch, length),
+            )  # More stable with f16 than dividing afterwards
+            weight = th.softmax(weight.float(), dim=-1).type(weight.dtype)
+            a = th.einsum("bts,bcs->bct", weight, v.reshape(bs * self.n_heads, ch, length))
+            a = a.reshape(bs, -1, length)
+        return a
+```
+
+传统：先改变形状再分
+
+```python
+class QKVAttentionLegacy(nn.Module):
+    def __init__(self, n_heads):
+        super().__init__()
+        self.n_heads = n_heads
+        self.attention_op: Optional[Any] = None
+
+    def forward(self, qkv):
+        """
+        Apply QKV attention.
+        :param qkv: an [N x (H * 3 * C) x T] tensor of Qs, Ks, and Vs.
+        :return: an [N x (H * C) x T] tensor after attention.
+        """
+        bs, width, length = qkv.shape
+        assert width % (3 * self.n_heads) == 0
+        ch = width // (3 * self.n_heads)
+        q, k, v = qkv.reshape(bs * self.n_heads, ch * 3, length).split(ch, dim=1)  #改变形状
+        scale = 1 / math.sqrt(math.sqrt(ch))
+        if XFORMERS_IS_AVAILBLE:
+            q, k, v = map(
+                lambda t:t.permute(0,2,1)
+                .contiguous(),
+                (q, k, v),
+            )
+            # actually compute the attention, what we cannot get enough of
+            a = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None, op=self.attention_op)
+            a = (
+                a.permute(0,2,1)
+                .reshape(bs, -1, length)
+            )
+        else:
+            weight = th.einsum(
+                "bct,bcs->bts", q * scale, k * scale
+            )  # More stable with f16 than dividing afterwards
+            weight = th.softmax(weight.float(), dim=-1).type(weight.dtype)
+            a = th.einsum("bts,bcs->bct", weight, v)
+            a = a.reshape(bs, -1, length)
+        return a
+```
+
+感知注意力：
+
+```python
+class PerceiverAttention(nn.Module):
+    def __init__(self, *, dim, dim_head=64, heads=8):
+        super().__init__()
+        self.scale = dim_head**-0.5
+        self.dim_head = dim_head
+        self.heads = heads
+        inner_dim = dim_head * heads
+
+        self.norm1 = nn.LayerNorm(dim)
+        self.norm2 = nn.LayerNorm(dim)
+
+        self.to_q = nn.Linear(dim, inner_dim, bias=False)
+        self.to_kv = nn.Linear(dim, inner_dim * 2, bias=False)
+        self.to_out = nn.Linear(inner_dim, dim, bias=False)
+```
+
