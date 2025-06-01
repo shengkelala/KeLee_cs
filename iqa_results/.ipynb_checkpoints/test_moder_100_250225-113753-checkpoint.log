@@ -1,0 +1,8 @@
+25-02-25 11:37:53.955 - INFO: Namespace(img_path='use_results', gt_path='FFHQ_test', log='iqa_results', log_name='moder_test', num_img=0)
+25-02-25 11:38:22.871 - INFO: psnr: 28.090782
+25-02-25 11:38:22.871 - INFO: ssim: 0.743509
+25-02-25 11:38:22.871 - INFO: lpips: 0.179132
+25-02-25 11:38:22.871 - INFO: niqe: 4.704661
+25-02-25 11:38:22.872 - INFO: musiq: 73.586478
+25-02-25 11:38:22.872 - INFO: clipiqa: 0.644955
+25-02-25 11:38:22.872 - INFO: fid: 49.360503

@@ -1,0 +1,8 @@
+25-02-27 17:01:28.148 - INFO: Namespace(img_path='sev_use_results', gt_path='data/FFHQ_test', log='iqa_results', log_name='sev_full', num_img=0)
+25-02-27 17:03:15.817 - INFO: psnr: 22.414194
+25-02-27 17:03:15.817 - INFO: ssim: 0.639432
+25-02-27 17:03:15.817 - INFO: lpips: 0.338911
+25-02-27 17:03:15.818 - INFO: niqe: 4.616706
+25-02-27 17:03:15.818 - INFO: musiq: 73.111142
+25-02-27 17:03:15.818 - INFO: clipiqa: 0.668848
+25-02-27 17:03:15.818 - INFO: fid: 39.123718
